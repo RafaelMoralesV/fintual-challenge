@@ -1,3 +1,5 @@
+use rust_decimal::prelude::*;
+use rust_decimal_macros::dec;
 use std::collections::HashMap;
 
 /// Problema original:
@@ -42,10 +44,10 @@ impl Portfolio {
             *current_units.entry(stock.name()).or_insert(0) += 1;
         }
 
-        let total_balance: f64 = self.stocks().iter().map(|s| s.current_price()).sum();
+        let total_balance: Decimal = self.stocks().iter().map(|s| s.current_price()).sum();
 
         // no tenemos nada en el portafolio.
-        if total_balance == 0f64 {
+        if total_balance.is_zero() {
             return suggestion;
         }
 
@@ -61,10 +63,13 @@ impl Portfolio {
             let price_per_unit = target_stock.current_price();
 
             // nuestro maximo dinero objetivo
-            let target_money = total_balance * (ratio / 100.0);
+            let target_money = total_balance * (ratio / dec!(100.0));
 
             // esta es la cantidad maxima que podriamos tener (segun nuestra estrategia conservadora)
-            let target_units = (target_money / price_per_unit) as usize;
+            let target_units = (target_money / price_per_unit)
+                .trunc()
+                .to_usize() // Esto no deberia fallar pq estamos truncando un numero mayor a cero
+                .unwrap_or(0);
 
             // esta es la cantidad que tenemos
             let held_units = *current_units.get(name).unwrap_or(&0);
@@ -86,19 +91,22 @@ impl Portfolio {
 #[derive(Debug, Clone)]
 pub struct Stock {
     name: String, // E.J: META, APPL, ETC.
-    current_price: f64,
+    current_price: Decimal,
 }
 
 impl Stock {
-    pub fn new(name: &str, price: f64) -> Self {
+    pub fn new(name: &str, price: Decimal) -> Self {
         Self {
             name: name.into(),
+
+            // Por hoy, voy a confiar que el precio es correcto nomas, pero deberia haber un constructor capaz
+            // de evitar enviar un precio con algun valor negativo por ejemplo.
             current_price: price,
         }
     }
 
     /// Getter simple.
-    pub fn current_price(&self) -> f64 {
+    pub fn current_price(&self) -> Decimal {
         self.current_price
     }
 
@@ -124,7 +132,7 @@ pub struct RebalanceSuggestion<'a> {
 /// accidente, asignar algo sin sentido como (50% META, 75% APPL), o (-30% META), etc.
 #[derive(Debug)]
 pub struct PortfolioTarget {
-    targets: Vec<(f64, Stock)>,
+    targets: Vec<(Decimal, Stock)>,
 }
 
 impl PortfolioTarget {
@@ -132,16 +140,16 @@ impl PortfolioTarget {
     /// ese stock.
     pub fn new(stock: Stock) -> Self {
         Self {
-            targets: vec![(100f64, stock)],
+            targets: vec![(dec!(100), stock)],
         }
     }
 
-    pub fn try_from_vec(stocks: Vec<(f64, Stock)>) -> Result<Self, String> {
-        if stocks.iter().map(|stock| stock.0).sum::<f64>() != 100f64 {
+    pub fn try_from_vec(stocks: Vec<(Decimal, Stock)>) -> Result<Self, String> {
+        if stocks.iter().map(|stock| stock.0).sum::<Decimal>() != dec!(100) {
             return Err("Los stocks objetivos no suman un 100%".into());
         }
 
-        if stocks.iter().any(|stock| stock.0 <= 0.0) {
+        if stocks.iter().any(|stock| stock.0 <= Decimal::ZERO) {
             return Err("Al menos uno de los stocks provistos tiene valor 0 o negativo.".into());
         }
 
@@ -152,7 +160,7 @@ impl PortfolioTarget {
         self.targets.iter().any(|stock| stock.1.name() == name)
     }
 
-    pub fn targets(&self) -> &[(f64, Stock)] {
+    pub fn targets(&self) -> &[(Decimal, Stock)] {
         &self.targets
     }
 }
@@ -168,15 +176,15 @@ mod tests {
         // Debería fallar si la suma es 90% o 110%
 
         let target_one = PortfolioTarget::try_from_vec(vec![
-            (45f64, Stock::new("META", 0f64)),
-            (45f64, Stock::new("APPL", 0f64)),
+            (dec!(45.0), Stock::new("META", Decimal::ZERO)),
+            (dec!(45.0), Stock::new("APPL", Decimal::ZERO)),
         ]);
 
         assert!(target_one.is_err());
 
         let target_two = PortfolioTarget::try_from_vec(vec![
-            (40f64, Stock::new("META", 0f64)),
-            (70f64, Stock::new("APPL", 0f64)),
+            (dec!(40.0), Stock::new("META", Decimal::ZERO)),
+            (dec!(70.0), Stock::new("APPL", Decimal::ZERO)),
         ]);
 
         assert!(target_two.is_err());
@@ -187,8 +195,8 @@ mod tests {
         // ¿Qué pasa si alguien intenta pasar un -10%?
         // Tu try_from_vec debería validar que cada elemento sea > 0.
         let target_one = PortfolioTarget::try_from_vec(vec![
-            (45f64, Stock::new("META", 0f64)),
-            (-10f64, Stock::new("APPL", 0f64)),
+            (dec!(45.0), Stock::new("META", Decimal::ZERO)),
+            (dec!(-10.0), Stock::new("APPL", Decimal::ZERO)),
         ]);
 
         assert!(target_one.is_err());
@@ -200,21 +208,18 @@ mod tests {
     fn test_rebalance_already_perfectly_balanced() {
         // Escenario: Tienes 40€ de META y 60€ de APPL, y tu target es 40/60.
         // Resultado esperado: Sugerencias vacías (to_buy y to_sell deben estar vacíos).
-        let meta = Stock::new("META", 10.0);
-        let appl = Stock::new("APPL", 15.0);
-
         let target = PortfolioTarget::try_from_vec(vec![
-            (40.0, Stock::new("META", 10.0)),
-            (60.0, Stock::new("APPL", 15.0)),
+            (dec!(40.0), Stock::new("META", dec!(10.0))),
+            (dec!(60.0), Stock::new("APPL", dec!(15.0))),
         ])
         .unwrap();
 
         let mut stocks = Vec::new();
         for _ in 0..4 {
-            stocks.push(Stock::new("META", 10.0));
+            stocks.push(Stock::new("META", dec!(10.0)));
         }
         for _ in 0..4 {
-            stocks.push(Stock::new("APPL", 15.0));
+            stocks.push(Stock::new("APPL", dec!(15.0)));
         }
 
         let portfolio = Portfolio {
@@ -231,9 +236,12 @@ mod tests {
     fn test_rebalance_sell_entire_position() {
         // Escenario: Tienes 100% de una acción que YA NO está en el PortfolioTarget.
         // Resultado esperado: to_sell debe contener todas esas acciones.
-        let target = PortfolioTarget::new(Stock::new("META", 100.0));
+        let target = PortfolioTarget::new(Stock::new("META", dec!(100.0)));
         let portfolio = Portfolio {
-            stocks: vec![Stock::new("GOOG", 50.0), Stock::new("GOOG", 50.0)],
+            stocks: vec![
+                Stock::new("GOOG", dec!(50.0)),
+                Stock::new("GOOG", dec!(50.0)),
+            ],
             allocation: target,
         };
 
@@ -249,12 +257,12 @@ mod tests {
         // Escenario: Tienes 100€ en efectivo (o en una acción que vas a vender)
         // y quieres comprar una nueva acción que no tenías.
         // Resultado esperado: to_buy debe contener la cantidad correcta de la nueva acción.
-        let meta_target = Stock::new("META", 25.0);
+        let meta_target = Stock::new("META", dec!(25.0));
         let target = PortfolioTarget::new(meta_target);
 
         let portfolio = Portfolio {
             stocks: vec![
-                Stock::new("CASH", 1.0); 100 // 100 unidades de 1€
+                Stock::new("CASH", dec!(1.0)); 100 // 100 unidades de 1€
             ],
             allocation: target,
         };
@@ -282,13 +290,13 @@ mod tests {
         // Si compras 2 (60€), te pasas del 50%.
         // Resultado esperado: to_buy debe sugerir 1 unidad, no 1.66 ni 2.
         let target = PortfolioTarget::try_from_vec(vec![
-            (50.0, Stock::new("META", 30.0)),
-            (50.0, Stock::new("CASH", 1.0)), // Relleno para el 100%
+            (dec!(50.0), Stock::new("META", dec!(30.0))),
+            (dec!(50.0), Stock::new("CASH", dec!(1.0))), // Relleno para el 100%
         ])
         .unwrap();
 
         let portfolio = Portfolio {
-            stocks: vec![Stock::new("OTHER", 100.0)],
+            stocks: vec![Stock::new("OTHER", dec!(100.0))],
             allocation: target,
         };
 
@@ -303,7 +311,7 @@ mod tests {
         // Escenario: El vector de stocks está vacío.
         // Resultado esperado: No debe crashear, debe devolver sugerencias vacías
         // o manejar el total de 0.0.
-        let target = PortfolioTarget::new(Stock::new("META", 100.0));
+        let target = PortfolioTarget::new(Stock::new("META", dec!(100.0)));
         let portfolio = Portfolio {
             stocks: vec![],
             allocation: target,
