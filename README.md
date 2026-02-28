@@ -2,6 +2,51 @@
 
 Este proyecto implementa un motor de rebalanceo de portafolios de inversión utilizando Rust. La solución se enfoca en la precisión financiera y el manejo de activos discretos (unidades enteras).
 
+## Cómo compilar
+
+Este proyecto utiliza el toolchain de Rust. Puede instalarse desde https://rustup.rs/
+
+### Toolchain desde devenv
+
+Utilizo `devenv.nix` para producir este toolchain de manera reproducible (ya que uso NixOS en mi pc personal 🤓). Puedes obtener el toolchain de rust ejecutando:
+
+```bash
+devenv shell
+```
+
+### Utilizando Cargo
+
+Con el toolchain instalado, se puede probar el proyecto tal que:
+
+```bash
+# Compilar
+cargo build
+
+# ejecutar pruebas unitarias
+cargo test
+```
+
+### Ejemplo de uso rápido
+
+Escribí este código como si fuera una librería, por lo que no produce un output o un ejecutable. La forma de probarlo es agregarlo como dependencia a otro proyecto de rust. Para integrar esta lógica en una aplicación, el flujo básico sería algo tal que:
+
+```rust
+// definimos un objetivo
+let target = PortfolioTarget::try_from_vec(vec![
+    (dec!(40.0), Stock::new("META", dec!(150.0))),
+    (dec!(60.0), Stock::new("AAPL", dec!(180.0))),
+]).unwrap();
+
+// definimos nuestro portafolio
+let portfolio = Portfolio { stocks, allocation: target };
+
+// obtenemos nuestras sugerencias de rebalanceo
+let sugerencia = portfolio.rebalance_portfolio();
+
+println!("Comprar: {:?}", sugerencia.to_buy);
+println!("Vender: {:?}", sugerencia.to_sell);
+```
+
 ## ¿ Por qué Rust ?
 
 Rust como lenguaje destaca en lugares donde se necesita código impecable, robusto, explícito y confiable, y otorga garantías para sistemas donde un error numérico no es una opción.
