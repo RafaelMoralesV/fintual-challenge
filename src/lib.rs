@@ -34,38 +34,69 @@ impl Portfolio {
     ///    venderemos o compraremos la mayor cantidad de stock posible hasta llegar a la proporcion
     ///    objetivo sin pasarnos. Esto seguramente resulta en un saldo excedente dentro de la
     ///    cartera del usuario/cliente.
-    pub fn rebalance_portfolio(&self) -> RebalanceSuggestion {
+    pub fn rebalance_portfolio<'a>(&'a self) -> RebalanceSuggestion<'a> {
         let mut suggestion = RebalanceSuggestion::default();
 
-        // obtenemos el total de cada stock
-        let balances: HashMap<&str, f64> =
-            self.stocks().iter().fold(HashMap::new(), |mut acc, stock| {
-                *acc.entry(stock.name()).or_insert(0.0) += stock.current_price();
-                acc
-            });
+        let mut current_units: HashMap<&str, usize> = HashMap::new();
+        for stock in self.stocks() {
+            *current_units.entry(stock.name()).or_insert(0) += 1;
+        }
 
-        // total en la cartera
-        let total_balance = balances.values().sum::<f64>();
+        let total_balance: f64 = self.stocks().iter().map(|s| s.current_price()).sum();
 
-        // nuestras sugerencias parten por vender cualquier stock que no este en nuestro allocation
+        // no tenemos nada en el portafolio.
+        if total_balance == 0f64 {
+            return suggestion;
+        }
 
-        // luego, por cada stock que si tenemos, tenemos que vender o comprar hasta alcanzar
-        // nuestro objetivo
+        // cualquier stock que no existe en nuestra asignacion se sugiere eliminar completamente
+        for (name, &units) in &current_units {
+            if !self.allocation.contains_key(name) {
+                suggestion.to_sell.insert(name, units);
+            }
+        }
 
-        // finalmente, compramos cualquier stock que nos haga falta
+        for (ratio, target_stock) in self.allocation.targets().iter() {
+            let name = target_stock.name();
+            let price_per_unit = target_stock.current_price();
+
+            // nuestro maximo dinero objetivo
+            let target_money = total_balance * (ratio / 100.0);
+
+            // esta es la cantidad maxima que podriamos tener (segun nuestra estrategia conservadora)
+            let target_units = (target_money / price_per_unit) as usize;
+
+            // esta es la cantidad que tenemos
+            let held_units = *current_units.get(name).unwrap_or(&0);
+
+            if target_units > held_units {
+                // sugerimos comprar la diferencia
+                suggestion.to_buy.insert(name, target_units - held_units);
+            } else if target_units < held_units {
+                // sugerimos vender la diferencia
+                suggestion.to_sell.insert(name, held_units - target_units);
+            }
+        }
 
         suggestion
     }
 }
 
 /// Clase que representa un stock.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stock {
     name: String, // E.J: META, APPL, ETC.
     current_price: f64,
 }
 
 impl Stock {
+    pub fn new(name: &str, price: f64) -> Self {
+        Self {
+            name: name.into(),
+            current_price: price,
+        }
+    }
+
     /// Getter simple.
     pub fn current_price(&self) -> f64 {
         self.current_price
@@ -77,9 +108,12 @@ impl Stock {
 }
 
 #[derive(Debug, Default)]
-pub struct RebalanceSuggestion {
-    to_buy: Vec<(usize, Stock)>,
-    to_sell: Vec<(usize, Stock)>,
+pub struct RebalanceSuggestion<'a> {
+    /// Mappea un stock (idenficado por su nombre) a una cantidad a comprar.
+    pub to_buy: HashMap<&'a str, usize>,
+
+    /// Mappea un stock (idenficado por su nombre) a una cantidad a vender.
+    pub to_sell: HashMap<&'a str, usize>,
 }
 
 /// Representa los stocks que el cliente quiere obtener.
@@ -96,13 +130,13 @@ pub struct PortfolioTarget {
 impl PortfolioTarget {
     /// Genera un nuevo target con un solo stock, que representa un portafolio objetivo de 100% de
     /// ese stock.
-    fn new(stock: Stock) -> Self {
+    pub fn new(stock: Stock) -> Self {
         Self {
             targets: vec![(100f64, stock)],
         }
     }
 
-    fn try_from_vec(stocks: Vec<(f64, Stock)>) -> Result<Self, String> {
+    pub fn try_from_vec(stocks: Vec<(f64, Stock)>) -> Result<Self, String> {
         if stocks.iter().map(|stock| stock.0).sum::<f64>() != 100f64 {
             return Err("Los stocks objetivos no suman un 100%".into());
         }
@@ -112,6 +146,14 @@ impl PortfolioTarget {
         }
 
         Ok(Self { targets: stocks })
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.targets.iter().any(|stock| stock.1.name() == name)
+    }
+
+    pub fn targets(&self) -> &[(f64, Stock)] {
+        &self.targets
     }
 }
 
@@ -126,39 +168,15 @@ mod tests {
         // Debería fallar si la suma es 90% o 110%
 
         let target_one = PortfolioTarget::try_from_vec(vec![
-            (
-                45f64,
-                Stock {
-                    name: "META".into(),
-                    current_price: 0f64,
-                },
-            ),
-            (
-                45f64,
-                Stock {
-                    name: "APPL".into(),
-                    current_price: 0f64,
-                },
-            ),
+            (45f64, Stock::new("META", 0f64)),
+            (45f64, Stock::new("APPL", 0f64)),
         ]);
 
         assert!(target_one.is_err());
 
         let target_two = PortfolioTarget::try_from_vec(vec![
-            (
-                40f64,
-                Stock {
-                    name: "META".into(),
-                    current_price: 0f64,
-                },
-            ),
-            (
-                70f64,
-                Stock {
-                    name: "APPL".into(),
-                    current_price: 0f64,
-                },
-            ),
+            (40f64, Stock::new("META", 0f64)),
+            (70f64, Stock::new("APPL", 0f64)),
         ]);
 
         assert!(target_two.is_err());
@@ -169,20 +187,8 @@ mod tests {
         // ¿Qué pasa si alguien intenta pasar un -10%?
         // Tu try_from_vec debería validar que cada elemento sea > 0.
         let target_one = PortfolioTarget::try_from_vec(vec![
-            (
-                45f64,
-                Stock {
-                    name: "META".into(),
-                    current_price: 0f64,
-                },
-            ),
-            (
-                -10f64,
-                Stock {
-                    name: "APPL".into(),
-                    current_price: 0f64,
-                },
-            ),
+            (45f64, Stock::new("META", 0f64)),
+            (-10f64, Stock::new("APPL", 0f64)),
         ]);
 
         assert!(target_one.is_err());
@@ -194,14 +200,48 @@ mod tests {
     fn test_rebalance_already_perfectly_balanced() {
         // Escenario: Tienes 40€ de META y 60€ de APPL, y tu target es 40/60.
         // Resultado esperado: Sugerencias vacías (to_buy y to_sell deben estar vacíos).
-        unimplemented!();
+        let meta = Stock::new("META", 10.0);
+        let appl = Stock::new("APPL", 15.0);
+
+        let target = PortfolioTarget::try_from_vec(vec![
+            (40.0, Stock::new("META", 10.0)),
+            (60.0, Stock::new("APPL", 15.0)),
+        ])
+        .unwrap();
+
+        let mut stocks = Vec::new();
+        for _ in 0..4 {
+            stocks.push(Stock::new("META", 10.0));
+        }
+        for _ in 0..4 {
+            stocks.push(Stock::new("APPL", 15.0));
+        }
+
+        let portfolio = Portfolio {
+            stocks,
+            allocation: target,
+        };
+        let suggestion = portfolio.rebalance_portfolio();
+
+        assert!(suggestion.to_buy.is_empty());
+        assert!(suggestion.to_sell.is_empty());
     }
 
     #[test]
     fn test_rebalance_sell_entire_position() {
         // Escenario: Tienes 100% de una acción que YA NO está en el PortfolioTarget.
         // Resultado esperado: to_sell debe contener todas esas acciones.
-        unimplemented!();
+        let target = PortfolioTarget::new(Stock::new("META", 100.0));
+        let portfolio = Portfolio {
+            stocks: vec![Stock::new("GOOG", 50.0), Stock::new("GOOG", 50.0)],
+            allocation: target,
+        };
+
+        let suggestion = portfolio.rebalance_portfolio();
+
+        // Debe vender las 2 de GOOG y comprar 1 de META
+        assert_eq!(*suggestion.to_sell.get("GOOG").unwrap(), 2);
+        assert_eq!(*suggestion.to_buy.get("META").unwrap(), 1);
     }
 
     #[test]
@@ -209,7 +249,29 @@ mod tests {
         // Escenario: Tienes 100€ en efectivo (o en una acción que vas a vender)
         // y quieres comprar una nueva acción que no tenías.
         // Resultado esperado: to_buy debe contener la cantidad correcta de la nueva acción.
-        unimplemented!();
+        let meta_target = Stock::new("META", 25.0);
+        let target = PortfolioTarget::new(meta_target);
+
+        let portfolio = Portfolio {
+            stocks: vec![
+                Stock::new("CASH", 1.0); 100 // 100 unidades de 1€
+            ],
+            allocation: target,
+        };
+
+        let suggestion = portfolio.rebalance_portfolio();
+
+        // nos deberia sugerir vender todo
+        assert_eq!(
+            *suggestion.to_sell.get("CASH").expect("Debería vender CASH"),
+            100
+        );
+
+        // nos deberia sugerir comprar todo lo que podamos de META
+        assert_eq!(
+            *suggestion.to_buy.get("META").expect("Debería comprar META"),
+            4
+        );
     }
 
     #[test]
@@ -219,7 +281,21 @@ mod tests {
         // Cálculo: 50% de 100€ es 50€. Con 50€ solo puedes comprar 1 META (30€).
         // Si compras 2 (60€), te pasas del 50%.
         // Resultado esperado: to_buy debe sugerir 1 unidad, no 1.66 ni 2.
-        unimplemented!();
+        let target = PortfolioTarget::try_from_vec(vec![
+            (50.0, Stock::new("META", 30.0)),
+            (50.0, Stock::new("CASH", 1.0)), // Relleno para el 100%
+        ])
+        .unwrap();
+
+        let portfolio = Portfolio {
+            stocks: vec![Stock::new("OTHER", 100.0)],
+            allocation: target,
+        };
+
+        let suggestion = portfolio.rebalance_portfolio();
+
+        // Verificamos que no intenta comprar 2 (que costarían 60€, pasando el target de 50€)
+        assert_eq!(*suggestion.to_buy.get("META").unwrap(), 1);
     }
 
     #[test]
@@ -227,13 +303,14 @@ mod tests {
         // Escenario: El vector de stocks está vacío.
         // Resultado esperado: No debe crashear, debe devolver sugerencias vacías
         // o manejar el total de 0.0.
-        unimplemented!();
-    }
+        let target = PortfolioTarget::new(Stock::new("META", 100.0));
+        let portfolio = Portfolio {
+            stocks: vec![],
+            allocation: target,
+        };
 
-    #[test]
-    fn test_rebalance_drastic_price_change() {
-        // Escenario: Tenías un portafolio balanceado, pero el precio de META subió al doble.
-        // Resultado esperado: Debe sugerir vender META para recuperar la proporción original.
-        unimplemented!();
+        let suggestion = portfolio.rebalance_portfolio();
+        assert!(suggestion.to_buy.is_empty());
+        assert!(suggestion.to_sell.is_empty());
     }
 }
